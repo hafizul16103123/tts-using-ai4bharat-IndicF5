@@ -1,0 +1,127 @@
+{
+  "info": {
+    "name": "IndicF5 TTS API",
+    "_postman_id": "b6f2a1d0-4e5b-4a3c-9d2e-indicf5ttsapi",
+    "description": "Functional API wrapping ai4bharat/IndicF5 — synthesizes Bengali (and other Indic-language) text into playable speech.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": ["{{base_url}}"],
+          "path": ["health"]
+        },
+        "description": "Liveness check + whether the model is currently loaded in memory."
+      },
+      "response": []
+    },
+    {
+      "name": "Warmup Model",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/warmup",
+          "host": ["{{base_url}}"],
+          "path": ["warmup"]
+        },
+        "description": "Eagerly loads the model into memory instead of waiting for the first /tts call. First call downloads ~1-2GB of gated model weights and can take a few minutes."
+      },
+      "response": []
+    },
+    {
+      "name": "List Voices",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/voices",
+          "host": ["{{base_url}}"],
+          "path": ["voices"]
+        },
+        "description": "Lists available preset voices and their reference transcripts."
+      },
+      "response": []
+    },
+    {
+      "name": "Text to Speech (Preset Voice)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "text",
+              "value": "আমার সোনার বাংলা, আমি তোমায় ভালোবাসি।",
+              "type": "text",
+              "description": "Bengali text to synthesize"
+            },
+            {
+              "key": "voice",
+              "value": "kan_f_happy",
+              "type": "text",
+              "description": "Preset voice name from /voices (default: kan_f_happy)"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/tts",
+          "host": ["{{base_url}}"],
+          "path": ["tts"]
+        },
+        "description": "Synthesizes Bengali text using one of the bundled preset voices. Returns audio/wav bytes directly — Postman will offer to preview/play or save the response as a file."
+      },
+      "response": []
+    },
+    {
+      "name": "Text to Speech (Custom Voice Clone)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "text",
+              "value": "বাংলাদেশ একটি সুন্দর দেশ। এখানে অনেক নদী আছে।",
+              "type": "text",
+              "description": "Bengali text to synthesize"
+            },
+            {
+              "key": "ref_audio",
+              "type": "file",
+              "src": [],
+              "description": "Upload a short reference audio clip (wav) whose voice/prosody will be cloned"
+            },
+            {
+              "key": "ref_text",
+              "value": "Transcript of the uploaded ref_audio clip goes here.",
+              "type": "text",
+              "description": "Exact transcript of ref_audio (required when ref_audio is supplied)"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/tts",
+          "host": ["{{base_url}}"],
+          "path": ["tts"]
+        },
+        "description": "Synthesizes Bengali text by cloning a voice from an uploaded reference clip + its transcript, instead of using a preset voice. Select a file for ref_audio before sending."
+      },
+      "response": []
+    }
+  ]
+}
