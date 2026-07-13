@@ -16,7 +16,7 @@ def main():
     print("Requesting synthesis ...")
     r = requests.post(
         f"{API_URL}/tts",
-        data={"text": BENGALI_TEXT, "voice": "bn"},
+        data={"text": BENGALI_TEXT},
         timeout=300,
     )
     if r.status_code != 200:
