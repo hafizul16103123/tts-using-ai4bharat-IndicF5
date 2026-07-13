@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>IndicF5 TTS Gateway — Test Console</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.25rem; }
+  label { display: block; margin-top: 1rem; font-weight: 600; font-size: 0.9rem; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 0.5rem; font-size: 1rem; margin-top: 0.25rem; }
+  textarea { min-height: 6rem; }
+  button { margin-top: 1rem; padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.6; }
+  #status { margin-top: 1rem; padding: 0.75rem; border-radius: 6px; background: #f0f0f0; font-family: monospace; white-space: pre-wrap; }
+  #status.error { background: #fde2e2; color: #8a1f1f; }
+  #status.ok { background: #e3f5e3; color: #1f5c1f; }
+  audio { width: 100%; margin-top: 1rem; }
+</style>
+</head>
+<body>
+  <h1>IndicF5 TTS Gateway — Test Console</h1>
+
+  <label for="apiKey">API key</label>
+  <input id="apiKey" type="text" placeholder="e.g. key1" />
+
+  <label for="text">Text (Bengali or any supported Indic language)</label>
+  <textarea id="text">বাংলাদেশ একটি সুন্দর দেশ। এখানে অনেক নদী আছে।</textarea>
+
+  <button id="submitBtn">Synthesize</button>
+
+  <div id="status" style="display:none;"></div>
+  <audio id="player" controls style="display:none;"></audio>
+
+<script>
+  const apiKeyInput = document.getElementById('apiKey');
+  const textInput = document.getElementById('text');
+  const submitBtn = document.getElementById('submitBtn');
+  const statusEl = document.getElementById('status');
+  const player = document.getElementById('player');
+
+  apiKeyInput.value = localStorage.getItem('ttsApiKey') || '';
+  apiKeyInput.addEventListener('change', () => localStorage.setItem('ttsApiKey', apiKeyInput.value));
+
+  function setStatus(text, kind) {
+    statusEl.style.display = 'block';
+    statusEl.className = kind || '';
+    statusEl.textContent = text;
+  }
+
+  async function pollJob(jobId, apiKey) {
+    while (true) {
+      const res = await fetch(`/tts/${jobId}`, { headers: { 'x-api-key': apiKey } });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.message || 'Failed to fetch job status.');
+
+      if (body.status === 'completed') {
+        setStatus(`Job ${jobId}: completed. Loading audio...`, 'ok');
+        return;
+      }
+      if (body.status === 'failed') {
+        throw new Error(`Job ${jobId} failed: ${body.error || 'unknown error'}`);
+      }
+      setStatus(`Job ${jobId}: ${body.status}...`);
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+
+  submitBtn.addEventListener('click', async () => {
+    const apiKey = apiKeyInput.value.trim();
+    const text = textInput.value.trim();
+    if (!apiKey) return setStatus('Enter an API key first.', 'error');
+    if (!text) return setStatus('Enter some text first.', 'error');
+
+    submitBtn.disabled = true;
+    player.style.display = 'none';
+    try {
+      const submitRes = await fetch('/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+        body: JSON.stringify({ text }),
+      });
+      const submitBody = await submitRes.json();
+      if (!submitRes.ok) throw new Error(submitBody.message || 'Submission failed.');
+
+      setStatus(`Job ${submitBody.jobId}: queued...`);
+      await pollJob(submitBody.jobId, apiKey);
+
+      const audioRes = await fetch(`/tts/${submitBody.jobId}/audio`, { headers: { 'x-api-key': apiKey } });
+      if (!audioRes.ok) {
+        const body = await audioRes.json().catch(() => ({}));
+        throw new Error(body.message || 'Failed to fetch audio.');
+      }
+      const blob = await audioRes.blob();
+      player.src = URL.createObjectURL(blob);
+      player.style.display = 'block';
+      player.play();
+      setStatus(`Job ${submitBody.jobId}: done.`, 'ok');
+    } catch (err) {
+      setStatus(String(err.message || err), 'error');
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

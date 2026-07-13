@@ -1,127 +1,180 @@
 {
   "info": {
-    "name": "IndicF5 TTS API",
+    "name": "IndicF5 TTS",
     "_postman_id": "b6f2a1d0-4e5b-4a3c-9d2e-indicf5ttsapi",
-    "description": "Functional API wrapping ai4bharat/IndicF5 — synthesizes Bengali (and other Indic-language) text into playable speech.",
+    "description": "Two APIs: the raw Python IndicF5 service, and the NestJS gateway that wraps it with auth, a job queue, and concurrency control.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
       "value": "http://127.0.0.1:8000",
-      "type": "string"
+      "type": "string",
+      "description": "Python IndicF5 service"
+    },
+    {
+      "key": "gateway_url",
+      "value": "http://127.0.0.1:3000",
+      "type": "string",
+      "description": "NestJS gateway"
+    },
+    {
+      "key": "api_key",
+      "value": "key1",
+      "type": "string",
+      "description": "Matches an entry in gateway/.env API_KEYS"
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "type": "string",
+      "description": "Populated by running 'Submit TTS Job' (its Tests script saves the returned jobId here)"
     }
   ],
   "item": [
     {
-      "name": "Health Check",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{base_url}}/health",
-          "host": ["{{base_url}}"],
-          "path": ["health"]
-        },
-        "description": "Liveness check + whether the model is currently loaded in memory."
-      },
-      "response": []
-    },
-    {
-      "name": "Warmup Model",
-      "request": {
-        "method": "POST",
-        "header": [],
-        "url": {
-          "raw": "{{base_url}}/warmup",
-          "host": ["{{base_url}}"],
-          "path": ["warmup"]
-        },
-        "description": "Eagerly loads the model into memory instead of waiting for the first /tts call. First call downloads ~1-2GB of gated model weights and can take a few minutes."
-      },
-      "response": []
-    },
-    {
-      "name": "List Voices",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{base_url}}/voices",
-          "host": ["{{base_url}}"],
-          "path": ["voices"]
-        },
-        "description": "Lists available preset voices and their reference transcripts."
-      },
-      "response": []
-    },
-    {
-      "name": "Text to Speech (Preset Voice)",
-      "request": {
-        "method": "POST",
-        "header": [],
-        "body": {
-          "mode": "formdata",
-          "formdata": [
-            {
-              "key": "text",
-              "value": "আমার সোনার বাংলা, আমি তোমায় ভালোবাসি।",
-              "type": "text",
-              "description": "Bengali text to synthesize"
+      "name": "Python TTS Service (direct)",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
             },
+            "description": "Liveness check + whether the model is currently loaded in memory."
+          },
+          "response": []
+        },
+        {
+          "name": "Warmup Model",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/warmup",
+              "host": ["{{base_url}}"],
+              "path": ["warmup"]
+            },
+            "description": "Eagerly loads the model into memory instead of waiting for the first /tts call. First call downloads ~1-2GB of gated model weights and can take a few minutes."
+          },
+          "response": []
+        },
+        {
+          "name": "List Voices",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/voices",
+              "host": ["{{base_url}}"],
+              "path": ["voices"]
+            },
+            "description": "Lists available preset voices and their reference transcripts. The default voice (bn) is always used by /tts."
+          },
+          "response": []
+        },
+        {
+          "name": "Text to Speech",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "text",
+                  "value": "বাংলাদেশ একটি সুন্দর দেশ। এখানে অনেক নদী আছে।",
+                  "type": "text",
+                  "description": "Text to synthesize (Bengali or any supported Indic language)"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/tts",
+              "host": ["{{base_url}}"],
+              "path": ["tts"]
+            },
+            "description": "Synthesizes text using the default bundled voice (bn). Takes ~15-30s on CPU. Returns audio/wav bytes directly — Postman will offer to preview/play or save the response as a file."
+          },
+          "response": []
+        }
+      ],
+      "description": "Calls the FastAPI service in app/ directly, on its own port. No auth, no queueing — one request blocks the whole process until synthesis finishes."
+    },
+    {
+      "name": "NestJS Gateway",
+      "item": [
+        {
+          "name": "Submit TTS Job",
+          "event": [
             {
-              "key": "voice",
-              "value": "kan_f_happy",
-              "type": "text",
-              "description": "Preset voice name from /voices (default: kan_f_happy)"
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('job_id', body.jobId);",
+                  "    console.log('Saved job_id =', body.jobId);",
+                  "}"
+                ]
+              }
             }
-          ]
-        },
-        "url": {
-          "raw": "{{base_url}}/tts",
-          "host": ["{{base_url}}"],
-          "path": ["tts"]
-        },
-        "description": "Synthesizes Bengali text using one of the bundled preset voices. Returns audio/wav bytes directly — Postman will offer to preview/play or save the response as a file."
-      },
-      "response": []
-    },
-    {
-      "name": "Text to Speech (Custom Voice Clone)",
-      "request": {
-        "method": "POST",
-        "header": [],
-        "body": {
-          "mode": "formdata",
-          "formdata": [
-            {
-              "key": "text",
-              "value": "বাংলাদেশ একটি সুন্দর দেশ। এখানে অনেক নদী আছে।",
-              "type": "text",
-              "description": "Bengali text to synthesize"
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{api_key}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"বাংলাদেশ একটি সুন্দর দেশ। এখানে অনেক নদী আছে।\"\n}",
+              "options": { "raw": { "language": "json" } }
             },
-            {
-              "key": "ref_audio",
-              "type": "file",
-              "src": [],
-              "description": "Upload a short reference audio clip (wav) whose voice/prosody will be cloned"
+            "url": {
+              "raw": "{{gateway_url}}/tts",
+              "host": ["{{gateway_url}}"],
+              "path": ["tts"]
             },
-            {
-              "key": "ref_text",
-              "value": "Transcript of the uploaded ref_audio clip goes here.",
-              "type": "text",
-              "description": "Exact transcript of ref_audio (required when ref_audio is supplied)"
-            }
-          ]
+            "description": "Enqueues a synthesis job and returns immediately with a jobId (202). The Tests script above saves jobId into {{job_id}} for the next two requests. 400 on empty/oversized text, 401 on missing/invalid API key, 429 if the queue is full."
+          },
+          "response": []
         },
-        "url": {
-          "raw": "{{base_url}}/tts",
-          "host": ["{{base_url}}"],
-          "path": ["tts"]
+        {
+          "name": "Get Job Status",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-api-key", "value": "{{api_key}}" }],
+            "url": {
+              "raw": "{{gateway_url}}/tts/{{job_id}}",
+              "host": ["{{gateway_url}}"],
+              "path": ["tts", "{{job_id}}"]
+            },
+            "description": "Poll this until status is 'completed' or 'failed'. Run 'Submit TTS Job' first to populate {{job_id}}. 404 if the job doesn't exist or belongs to a different API key."
+          },
+          "response": []
         },
-        "description": "Synthesizes Bengali text by cloning a voice from an uploaded reference clip + its transcript, instead of using a preset voice. Select a file for ref_audio before sending."
-      },
-      "response": []
+        {
+          "name": "Get Job Audio",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-api-key", "value": "{{api_key}}" }],
+            "url": {
+              "raw": "{{gateway_url}}/tts/{{job_id}}/audio",
+              "host": ["{{gateway_url}}"],
+              "path": ["tts", "{{job_id}}", "audio"]
+            },
+            "description": "Returns audio/wav bytes once the job is completed. 409 if not finished yet or the job failed, 404 for an unknown/foreign job."
+          },
+          "response": []
+        }
+      ],
+      "description": "Calls the gateway in gateway/ (must be running on gateway_url, with Redis up and the Python service reachable). Requires x-api-key. Flow: Submit -> Get Job Status (poll) -> Get Job Audio."
     }
   ]
 }

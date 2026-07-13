@@ -7,3 +7,8 @@ outputs/
 !assets/prompts/*.wav
 .hf_cache/
 server.log
+
+gateway/node_modules/
+gateway/dist/
+gateway/storage/*.wav
+gateway/.env
