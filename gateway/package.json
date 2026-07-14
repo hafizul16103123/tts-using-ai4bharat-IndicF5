@@ -7,7 +7,10 @@
     "build": "nest build",
     "start": "nest start",
     "start:dev": "nest start --watch",
-    "start:prod": "node dist/main"
+    "start:prod": "node dist/main",
+    "start:worker": "nest start --entryFile worker.main",
+    "start:worker:dev": "nest start --entryFile worker.main --watch",
+    "start:worker:prod": "node dist/worker.main"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.1",

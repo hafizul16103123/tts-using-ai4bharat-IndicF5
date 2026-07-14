@@ -61,7 +61,7 @@ async def text_to_speech(
     resolved_ref_text = voice_entry["ref_text"]
 
     try:
-        wav_bytes = tts_model.synthesize(text, ref_audio_path, resolved_ref_text)
+        wav_bytes = await tts_model.synthesize_async(text, ref_audio_path, resolved_ref_text)
     except Exception as e:
         logger.exception("TTS synthesis failed")
         raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}")

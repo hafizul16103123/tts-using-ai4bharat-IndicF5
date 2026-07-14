@@ -9,10 +9,11 @@ The system has two parts:
 | [`app/`](app/) | A Python/FastAPI service that wraps IndicF5 itself: text in, WAV bytes out. |
 | [`gateway/`](gateway/) | A NestJS API in front of it, adding API-key auth with per-user isolation, a Redis/BullMQ job queue with a bounded worker, backpressure, timeouts, rate limiting, and sane error handling for concurrent multi-user load. |
 
-The Python service alone is a thin, single-request model wrapper — it has no auth and can only
-truly process one synthesis at a time (each call takes 15-30s on CPU). The gateway is what turns
-that into something that behaves reasonably under many simultaneous users: request queuing
-instead of requests piling up on a blocked event loop, isolation between users' jobs, and
+The Python service alone is a thin model wrapper — it has no auth, and can only run a bounded
+number of syntheses at once (`MAX_CONCURRENT_SYNTHESIS`, currently 2, via a small thread pool so
+its event loop stays responsive; each call still takes 15-30s on CPU). The gateway is what turns
+that into something that behaves reasonably under many simultaneous users: an explicit job queue
+instead of requests piling up past what the backend can run, isolation between users' jobs, and
 explicit limits instead of unbounded growth. **The gateway is the primary deliverable** for the
 concurrency/multi-user/robustness requirements; see [`gateway/README.md`](gateway/README.md) for
 the full design write-up and trade-offs.
@@ -49,9 +50,9 @@ both the raw Python service and the gateway.
   user's job (status or audio) returns `404`, never leaking that it exists.
 - **Queueing**: `POST /tts` enqueues a BullMQ job and returns a `jobId` immediately (`202`);
   clients poll `GET /tts/:jobId` for status and `GET /tts/:jobId/audio` once `completed`.
-- **Concurrency**: a worker pulls one job at a time from the queue and calls the Python service —
-  matching the fact that the Python backend can only do one synthesis at a time anyway, so this
-  serializes real work instead of piling up blocked requests against it.
+- **Concurrency**: a worker pulls up to `WORKER_CONCURRENCY` jobs at a time from the queue and
+  calls the Python service — matching the Python service's own `MAX_CONCURRENT_SYNTHESIS`, so the
+  gateway dispatches exactly as much real parallel work as the backend can actually run, no more.
 - **Backpressure**: once too many jobs are queued/active (`MAX_QUEUE_SIZE`), new submissions get
   `429` instead of the queue growing unboundedly.
 - **Rate limiting**: each API key is capped to `RATE_LIMIT_MAX` requests per `RATE_LIMIT_TTL_MS`
@@ -61,6 +62,96 @@ both the raw Python service and the gateway.
   of retrying a 30s CPU-bound job automatically.
 
 Full rationale and trade-offs for each of these: [`gateway/README.md`](gateway/README.md).
+
+## Horizontal scaling
+
+The setup above is one Python process and one gateway process — real, but bounded by one
+machine's CPU core share. `docker-compose.scale.yml` containerizes the whole system so the
+Python inference tier and the gateway's worker tier can each be scaled out independently, instead
+of just raising one process's internal concurrency:
+
+```
+                     ┌─────────────┐
+   clients ────────► │ gateway-api │  (stateless HTTP — cheap, not the bottleneck)
+                     └──────┬──────┘
+                            │ enqueue/poll
+                     ┌──────▼──────┐
+                     │    redis    │  (shared BullMQ queue)
+                     └──────┬──────┘
+                            │ consume
+                  ┌─────────┴─────────┐
+                  │  gateway-worker   │  × M replicas (each WORKER_CONCURRENCY jobs)
+                  └─────────┬─────────┘
+                            │ HTTP (round-robin via nginx)
+                     ┌──────▼──────┐
+                     │    nginx    │
+                     └──────┬──────┘
+                  ┌─────────┴─────────┐
+                  │    python-tts     │  × N replicas (each MAX_CONCURRENT_SYNTHESIS jobs)
+                  └───────────────────┘
+```
+
+Total real concurrent capacity ≈ `N × MAX_CONCURRENT_SYNTHESIS`, matched by
+`M × WORKER_CONCURRENCY` on the gateway side (keep these two products equal — dispatching more
+jobs to Python than it can run in parallel just queues them *inside* Python's thread pool instead
+of the gateway's, with less visibility and a real risk of timeouts).
+
+Run it (defaults to 4 replicas each):
+
+```powershell
+docker compose -f docker-compose.scale.yml up -d --build
+```
+
+`redis` and `nginx` run as one instance each (redis is a shared broker; nginx is a cheap L7 load
+balancer using Docker's embedded DNS to round-robin across however many `python-tts` replicas
+are currently up — see `deploy/nginx.conf`). `gateway-api` also runs as one instance since it's
+stateless and lightweight; scale it too the same way if HTTP-handling itself ever became the
+bottleneck, which it isn't here.
+
+### What actually happened when this was tested
+
+Building this surfaced a real bug, not just a config exercise: `os.cpu_count()` inside a
+container reports the *host's* full core count regardless of how many other replicas are
+running, so each container's thread math (`app/model.py`) independently assumed it owned all 16
+cores. At 4 replicas that oversubscribed the CPU by 4×, and every job in the first test batch
+either failed or came within a hair of the timeout. Fixed with an explicit `TORCH_THREADS`
+override (each replica told its *actual* fair share — see `docker-compose.scale.yml`) instead of
+relying on auto-detection, which silently breaks the moment more than one process shares a host.
+
+With that fixed and `MAX_CONCURRENT_SYNTHESIS=1` per replica (simplest to reason about: N
+replicas = N total concurrent jobs), an 8-job batch was timed both ways on this machine:
+
+| Config | Total time for 8 jobs | Throughput |
+|---|---|---|
+| 1 replica (16 threads) | 254s | ~1.9 jobs/min |
+| 4 replicas (4 threads each) | 103s | ~4.7 jobs/min |
+
+**~2.5× throughput from 4× the replicas — not a full 4×**, because giving each replica only
+4 threads instead of 16 also makes each individual job slower (less intra-op parallelism per
+inference). That's the honest shape of horizontal scaling *on one box*: real gains, sub-linear,
+because replicas are still splitting one finite core budget rather than adding hardware. This is
+exactly the ceiling described above — it's what running real additional hardware (more
+machines, or GPUs) removes.
+
+A replica was also killed mid-batch to check failure behavior: the one job actively in flight to
+it failed fast and cleanly (`502` in 6s — nginx detected the dead upstream immediately, no hang),
+while every other job, including ones still queued for that same replica, completed normally on
+the remaining 3. No stuck jobs, no cascading failure.
+
+**The honest capacity math**: this machine has 16 CPU cores and no GPU. Every replica above is a
+container sharing those same 16 cores — running more replicas on *one box* doesn't add hardware,
+it just repartitions the same core budget, with diminishing (and eventually negative) returns past
+the core count. What this demo actually proves is the *mechanism*: N replicas give ~N× throughput
+up to that hardware ceiling, the queue drains proportionally faster, and a replica can be killed
+mid-batch without the whole system hanging (in-flight jobs routed to it simply time out and get
+marked `failed`, per the existing no-retry design). Reaching a literal 100 concurrent jobs means
+running that many replicas' worth of `MAX_CONCURRENT_SYNTHESIS` across **real additional
+hardware** — more physical/cloud machines, or a handful of GPU-backed instances (GPUs batch
+inference requests instead of just interleaving CPU threads, so a couple of GPU replicas would
+get you there far more cheaply than dozens of CPU boxes). The architecture here — stateless API,
+shared Redis queue, independently-scalable workers, load-balanced inference tier — is exactly
+what you'd point at more hardware to get there; nothing about it is single-machine-specific
+except the replica counts.
 
 ## Robustness (unhappy paths)
 
@@ -106,7 +197,7 @@ Recent `torchaudio` loads audio via `torchcodec`, which dynamically links FFmpeg
 
 This prepends the shared-FFmpeg `bin` directory to `PATH` and starts `uvicorn app.main:app` on `0.0.0.0:8000`. (Running `uvicorn` directly without that `PATH` entry will fail at synthesis time with a `torchcodec`/`libtorchcodec` load error.)
 
-The model loads lazily on the first `/tts` call (or eagerly via `POST /warmup`). First load downloads ~1-2GB of gated model weights and can take a few minutes; inference runs on CPU on this machine (no CUDA GPU detected), so expect 15-30s per request depending on text length. This is exactly why the gateway (above) queues requests rather than forwarding them straight through.
+The model loads lazily on the first `/tts` call (or eagerly via `POST /warmup`). First load downloads ~1-2GB of gated model weights and can take a few minutes; inference runs on CPU on this machine (no CUDA GPU detected), so expect 15-30s per request depending on text length. `/tts` runs synthesis in a small thread pool (`MAX_CONCURRENT_SYNTHESIS`, default 2) rather than blocking the event loop, so `/health` and other requests stay responsive and a bounded number of syntheses can genuinely run in parallel — but that bound is still real, which is exactly why the gateway (above) queues requests rather than forwarding them all straight through.
 
 ### Endpoints
 

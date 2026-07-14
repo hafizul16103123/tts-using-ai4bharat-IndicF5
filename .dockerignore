@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+gateway/node_modules/
+gateway/dist/
+gateway/storage/*.wav
+.git/
+.hf_cache/
+*.wav
+!assets/prompts/*.wav
+server.log

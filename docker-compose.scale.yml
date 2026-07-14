@@ -1,0 +1,98 @@
+# Horizontal-scaling demo stack. Separate from gateway/docker-compose.yml (which just runs a
+# dev Redis for the normal single-process `npm run start:dev` workflow) — this file containerizes
+# everything and lets you scale the Python inference tier and the gateway's worker tier
+# independently. Defaults to 4 replicas each:
+#
+#   docker compose -f docker-compose.scale.yml up -d --build
+#
+# To scale to a different replica count N, pass matching --scale flags for all four of
+# python-tts/gateway-worker/MAX_CONCURRENT_SYNTHESIS*replicas/TORCH_THREADS together, e.g. for N=8
+# on this 16-core machine (TORCH_THREADS=16/8=2):
+#
+#   TORCH_THREADS=2 docker compose -f docker-compose.scale.yml up -d --scale python-tts=8 --scale gateway-worker=8
+#
+# IMPORTANT: docker compose reconciles to each service's declared `deploy.replicas` (4) on every
+# `up` that doesn't explicitly pass --scale for that service — always pass --scale for BOTH
+# python-tts and gateway-worker together, even when you only meant to change one of them,
+# or the other will silently snap back to 4.
+#
+# See README.md "Horizontal scaling" for the architecture and capacity math.
+name: tts-scale
+
+services:
+  redis:
+    image: redis:7-alpine
+
+  python-tts:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      # Keep at 1 per replica when horizontally scaling: it's simplest to reason about (N
+      # replicas = N total concurrent jobs) and avoids compounding with TORCH_THREADS below.
+      MAX_CONCURRENT_SYNTHESIS: ${MAX_CONCURRENT_SYNTHESIS:-1}
+      # Every replica sees the *host's* full core count via os.cpu_count() regardless of how
+      # many replicas are running, so this must be set explicitly to each replica's fair share:
+      # host cores / (replica count * MAX_CONCURRENT_SYNTHESIS). Default here assumes 4
+      # replicas on a 16-core host (16 / (4*1) = 4) — adjust if you scale python-tts differently.
+      TORCH_THREADS: ${TORCH_THREADS:-4}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    deploy:
+      replicas: 4
+
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - python-tts
+
+  gateway-api:
+    image: tts-gateway:scale
+    build:
+      context: ./gateway
+    command: ["node", "dist/main.js"]
+    environment:
+      PORT: 3000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PYTHON_TTS_URL: http://nginx:8000
+      PYTHON_TTS_TIMEOUT_MS: ${PYTHON_TTS_TIMEOUT_MS:-90000}
+      API_KEYS: ${API_KEYS:-key1:alice,key2:bob}
+      MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-20}
+      MAX_TEXT_LENGTH: ${MAX_TEXT_LENGTH:-500}
+      RATE_LIMIT_TTL_MS: ${RATE_LIMIT_TTL_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-10}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - redis
+      - nginx
+
+  gateway-worker:
+    image: tts-gateway:scale
+    build:
+      context: ./gateway
+    command: ["node", "dist/worker.main.js"]
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PYTHON_TTS_URL: http://nginx:8000
+      PYTHON_TTS_TIMEOUT_MS: ${PYTHON_TTS_TIMEOUT_MS:-90000}
+      # Per *replica*, not total — 4 replicas x WORKER_CONCURRENCY=1 = 4 total dispatch slots,
+      # matching python-tts's 4 replicas x MAX_CONCURRENT_SYNTHESIS=1 = 4 total execution slots.
+      # Mismatching these (e.g. leaving this at 2) over-dispatches jobs the Python tier can't
+      # actually run in parallel, which just queues them behind each other and risks timeouts.
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+    depends_on:
+      - redis
+      - nginx
+    deploy:
+      replicas: 4
+
+volumes:
+  hf-cache:

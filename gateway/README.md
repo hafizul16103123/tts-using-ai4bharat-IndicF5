@@ -1,22 +1,22 @@
 # TTS Gateway (NestJS)
 
 A production-minded API gateway in front of the existing Python IndicF5 service (`../app`).
-The Python service stays untouched — it's treated as an external, single-threaded, CPU-bound
-inference backend. This gateway adds what a real multi-user deployment needs around it:
-API-key auth with per-user isolation, a job queue with a bounded worker, backpressure, timeouts,
-rate limiting, and sane error responses.
+This gateway adds what a real multi-user deployment needs: API-key auth with per-user isolation,
+a job queue with a bounded worker, backpressure, timeouts, rate limiting, and sane error
+responses.
 
 ## Why a queue in front of a "wrapper"?
 
-The Python service's `/tts` handler is `async def` but calls model inference *synchronously*
-inside the event loop — a single Uvicorn worker can only do one synthesis at a time regardless of
-how many requests arrive concurrently; extra concurrent requests just pile up. Each synthesis
-also takes 15-30s on this CPU-only machine. Given that, naively forwarding every incoming request
-straight to Python would mean concurrent callers blocking each other with long-hanging HTTP
-connections, no visibility into position-in-queue, and no way to protect the backend from being
-overwhelmed. Wrapping it in a **BullMQ job queue + a single-concurrency worker** turns that into an
-explicit, observable state machine (`queued → active → completed/failed`) instead of an
-opaque blocking call, and gives us a place to add backpressure, timeouts, and per-user isolation.
+Each synthesis takes 15-30s on this CPU-only machine, and the Python service can only run a
+bounded number of them at once (`MAX_CONCURRENT_SYNTHESIS` in `../app`, currently 2 — see
+`../app/model.py`, which runs inference in a small thread pool instead of blocking its event
+loop). Given that, naively forwarding every incoming request straight to Python would mean
+concurrent callers blocking each other with long-hanging HTTP connections, no visibility into
+position-in-queue, and no way to protect the backend from being overwhelmed once more requests
+arrive than it can run at once. Wrapping it in a **BullMQ job queue + a bounded-concurrency
+worker** turns that into an explicit, observable state machine
+(`queued → active → completed/failed`) instead of a pile of blocking calls, and gives us a place
+to add backpressure, timeouts, and per-user isolation.
 
 ## Design decisions & trade-offs
 
@@ -24,10 +24,12 @@ opaque blocking call, and gives us a place to add backpressure, timeouts, and pe
   restart) and because it's the standard, inspectable Node job/worker pattern. Trade-off: an
   extra piece of infra to run (a small `docker-compose.yml` is included, on host port `6380` to
   avoid clashing with any other local Redis).
-- **Worker concurrency defaults to 1** (`WORKER_CONCURRENCY`). Raising it would not add real
-  parallelism against the current Python backend — it would only make it contend with itself —
-  so serializing at the gateway is both correct and the simplest option. If the Python service
-  were changed to run inference in a thread/process pool, this number could be raised in lockstep.
+- **Worker concurrency defaults to 2** (`WORKER_CONCURRENCY`), matching the Python service's
+  `MAX_CONCURRENT_SYNTHESIS`. The two are meant to move together: the gateway's worker only ever
+  dispatches that many jobs to Python at once, because dispatching more wouldn't run in parallel —
+  it would just queue up *inside* Python's thread pool instead of the gateway's, with less
+  visibility and a risk of jobs timing out while waiting their turn there. Raise both together if
+  this machine's core count can support more concurrent inferences.
 - **Submit + poll**, not streaming. `POST /tts` returns a `jobId` immediately (202); the client
   polls `GET /tts/:jobId` for status and `GET /tts/:jobId/audio` once `completed`. Simple to
   exercise from curl, Postman, or the bundled HTML page.
@@ -98,8 +100,17 @@ submit, and it polls status and plays the resulting audio once ready.
 
 ## Verifying concurrency & backpressure
 
-- Fire several `POST /tts` requests back-to-back and poll each `jobId` — you'll see them move
-  through `queued → active → completed` one at a time (proving the worker really does serialize
-  against the Python backend).
+- Fire several `POST /tts` requests back-to-back and poll each `jobId` — you'll see up to
+  `WORKER_CONCURRENCY` (2) jobs `active` at once, with the rest sitting `queued` until a slot
+  frees up.
 - Temporarily set `MAX_QUEUE_SIZE=1` in `.env`, restart, and fire two requests at once — the
   second gets `429`.
+
+## Horizontal scaling beyond one process
+
+This gateway is already split so it *can* scale horizontally: `src/main.ts` (the stateless HTTP
+API) and `src/worker.main.ts` (the BullMQ consumer, `TtsProcessor`) are separate entrypoints built
+from the same image, so API replicas and worker replicas scale independently and both just talk to
+the same Redis. See `../docker-compose.scale.yml` and the "Horizontal scaling" section in the
+root `README.md` for the full containerized demo (load-balanced Python replicas + scaled worker
+replicas) and the honest capacity math for reaching real high-concurrency targets.

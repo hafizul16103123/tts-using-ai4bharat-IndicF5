@@ -21,7 +21,7 @@ export interface TtsJobResult {
 
 const STORAGE_DIR = path.join(__dirname, '..', '..', 'storage');
 
-@Processor('tts', { concurrency: parseInt(process.env.WORKER_CONCURRENCY ?? '1', 10) })
+@Processor('tts', { concurrency: parseInt(process.env.WORKER_CONCURRENCY ?? '2', 10) })
 export class TtsProcessor extends WorkerHost {
   private readonly logger = new Logger(TtsProcessor.name);
 

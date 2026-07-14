@@ -34,7 +34,7 @@ export default (): AppConfig => ({
   redisPort: parseInt(process.env.REDIS_PORT ?? '6380', 10),
   pythonTtsUrl: process.env.PYTHON_TTS_URL ?? 'http://127.0.0.1:8000',
   pythonTtsTimeoutMs: parseInt(process.env.PYTHON_TTS_TIMEOUT_MS ?? '60000', 10),
-  workerConcurrency: parseInt(process.env.WORKER_CONCURRENCY ?? '1', 10),
+  workerConcurrency: parseInt(process.env.WORKER_CONCURRENCY ?? '2', 10),
   maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE ?? '20', 10),
   maxTextLength: parseInt(process.env.MAX_TEXT_LENGTH ?? '500', 10),
   rateLimitTtlMs: parseInt(process.env.RATE_LIMIT_TTL_MS ?? '60000', 10),
