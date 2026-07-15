@@ -69,6 +69,8 @@ services:
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-10}
     ports:
       - "3000:3000"
+    volumes:
+      - gateway-storage:/srv/storage
     depends_on:
       - redis
       - nginx
@@ -88,6 +90,8 @@ services:
       # Mismatching these (e.g. leaving this at 2) over-dispatches jobs the Python tier can't
       # actually run in parallel, which just queues them behind each other and risks timeouts.
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+    volumes:
+      - gateway-storage:/srv/storage
     depends_on:
       - redis
       - nginx
@@ -96,3 +100,11 @@ services:
 
 volumes:
   hf-cache:
+  # Shared so gateway-api can read a WAV file that a *different* gateway-worker replica
+  # wrote (each container otherwise has its own local disk — a worker writing to its own
+  # filesystem is invisible to the api container and to every other worker replica).
+  # This only works because every replica here is on the same Docker host: a named volume
+  # with the default local driver doesn't span multiple physical machines. A real multi-node
+  # deployment (Swarm/Kubernetes across real hosts) needs actual shared storage instead —
+  # S3-compatible object storage, EFS/NFS, etc. — not a local volume.
+  gateway-storage:

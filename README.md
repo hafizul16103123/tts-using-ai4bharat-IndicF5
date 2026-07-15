@@ -138,6 +138,17 @@ it failed fast and cleanly (`502` in 6s — nginx detected the dead upstream imm
 while every other job, including ones still queued for that same replica, completed normally on
 the remaining 3. No stuck jobs, no cascading failure.
 
+A second bug turned up once multiple `gateway-worker`/`gateway-api` replicas were actually
+exercised: `GET /tts/:jobId/audio` returned "Stored audio result is no longer available" even
+though the job showed `completed`. Cause: whichever `gateway-worker` replica processed the job
+wrote the WAV to *its own* container's local disk — invisible to `gateway-api` (a different
+container) when the client polled for it, and invisible to every other worker replica too. Fixed
+with a shared `gateway-storage` Docker volume mounted into `gateway-api` and every
+`gateway-worker` replica. That fix is honestly scoped to this demo, though: a plain named volume
+only works because every replica is on the same Docker host — a real multi-node deployment
+(Swarm/Kubernetes across separate machines) would need actual shared storage (S3-compatible
+object storage, EFS/NFS) instead, since local volumes don't span hosts.
+
 **The honest capacity math**: this machine has 16 CPU cores and no GPU. Every replica above is a
 container sharing those same 16 cores — running more replicas on *one box* doesn't add hardware,
 it just repartitions the same core budget, with diminishing (and eventually negative) returns past

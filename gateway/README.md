@@ -46,7 +46,12 @@ to add backpressure, timeouts, and per-user isolation.
   the client can decide to resubmit.
 - **Results stored on disk** (`storage/<jobId>.wav`), not as a base64 blob inside the Redis job
   record — keeps Redis lean and separates job metadata from the actual audio blob, the way a real
-  system would split job state from object storage.
+  system would split job state from object storage. In single-process dev this "just works" since
+  there's only one `storage/`. The moment you run multiple `gateway-worker`/`gateway-api`
+  instances (see "Horizontal scaling" below), each has its own local disk, so this needs shared
+  storage — `docker-compose.scale.yml` mounts a shared Docker volume for that, which is honestly
+  scoped to a single Docker host; a real multi-node deployment would want S3-compatible object
+  storage or NFS/EFS instead.
 
 ## Setup
 
