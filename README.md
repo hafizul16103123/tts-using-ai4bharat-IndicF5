@@ -149,6 +149,23 @@ only works because every replica is on the same Docker host — a real multi-nod
 (Swarm/Kubernetes across separate machines) would need actual shared storage (S3-compatible
 object storage, EFS/NFS) instead, since local volumes don't span hosts.
 
+A third bug, found by submitting 4 jobs at once and watching 2 of them time out: nginx wasn't
+actually load-balancing evenly. The original `deploy/nginx.conf` used
+`set $upstream http://python-tts:8000; proxy_pass $upstream;` — the standard-looking trick for
+forcing nginx to re-resolve a Docker service name via its embedded DNS instead of caching the
+first IP forever. In practice, verified with `docker stats` during a live 4-job test, this stuck
+to a single resolved backend per connection rather than spreading across all 4 replica IPs: one
+replica sat at 0% CPU the entire run while another got double-booked, and the second job queued
+behind it on that single-concurrency replica blew past the timeout. Fixed by switching to nginx's
+purpose-built mechanism for this — an `upstream {}` block with `zone` + `server ... resolve;`
+(OSS nginx 1.27.3+; the `nginx:alpine` image here runs 1.31.2) — which keeps a live, shared pool
+of every resolved IP and properly round-robins across it. Re-ran the same 4-concurrent-job test
+after the fix: all 4 replicas showed ~387-393% CPU simultaneously and all 4 jobs completed
+together in ~45s. The lesson: the "put the hostname in a variable" DNS re-resolution trick is a
+common recommendation online, but it doesn't actually load-balance across multiple IPs in stock
+nginx — worth verifying with real concurrent traffic and `docker stats`, not just trusting that a
+config "looks right."
+
 **The honest capacity math**: this machine has 16 CPU cores and no GPU. Every replica above is a
 container sharing those same 16 cores — running more replicas on *one box* doesn't add hardware,
 it just repartitions the same core budget, with diminishing (and eventually negative) returns past

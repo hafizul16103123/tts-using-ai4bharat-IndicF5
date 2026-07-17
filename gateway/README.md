@@ -91,8 +91,26 @@ All `/tts*` routes require an `x-api-key` header. Valid keys are configured via 
 `429` once the queue is full.
 
 ### `GET /tts/:jobId`
-→ `200 { "jobId", "status": "queued"|"active"|"completed"|"failed", "error"?, "createdAt", "completedAt"? }`.
-`404` if the job doesn't exist or belongs to a different API key.
+→ `200`:
+```json
+{
+  "jobId": "...",
+  "status": "queued" | "active" | "completed" | "failed",
+  "error": "...",
+  "createdAt": "15/07/2026, 21:15:32 (Asia/Dhaka)",
+  "completedAt": "15/07/2026, 21:16:04 (Asia/Dhaka)",
+  "workerId": "a1b2c3d4e5f6",
+  "startedAt": "15/07/2026, 21:15:33 (Asia/Dhaka)",
+  "durationSec": 31.02
+}
+```
+`createdAt`/`completedAt`/`startedAt` are formatted in Bangladesh local time (`Asia/Dhaka`).
+`workerId` (from BullMQ's `job.processedBy`) and `startedAt` are only present once a worker has
+picked the job up — `workerId` is the hostname of whichever `gateway-worker` replica processed
+it (in Docker, a container's hostname is its container ID, so this is how to tell which replica
+actually did the work — see "Horizontal scaling" in the root README). `durationSec` is only
+present once the job has finished (`completedAt - startedAt`, in seconds). `404` if the job
+doesn't exist or belongs to a different API key.
 
 ### `GET /tts/:jobId/audio`
 → `200` with `audio/wav` bytes once the job is `completed`. `409` if not finished yet or the job

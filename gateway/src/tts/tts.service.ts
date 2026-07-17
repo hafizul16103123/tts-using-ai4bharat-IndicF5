@@ -12,6 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import { promises as fs } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
+import { formatBangladeshTime, toDurationSeconds } from '../common/time.util';
 import { ApiUser, AppConfig } from '../config/configuration';
 import { TtsJobData, TtsJobResult } from './tts.processor';
 
@@ -21,8 +22,11 @@ export interface JobStatusResponse {
   jobId: string;
   status: JobStatus;
   error?: string;
-  createdAt: number;
-  completedAt?: number;
+  createdAt: string;
+  completedAt?: string;
+  workerId?: string;
+  startedAt?: string;
+  durationSec?: number;
 }
 
 @Injectable()
@@ -76,8 +80,14 @@ export class TtsService {
       jobId: job.id!,
       status,
       error: status === 'failed' ? job.failedReason : undefined,
-      createdAt: job.timestamp,
-      completedAt: job.finishedOn,
+      createdAt: formatBangladeshTime(job.timestamp),
+      completedAt: job.finishedOn ? formatBangladeshTime(job.finishedOn) : undefined,
+      workerId: job.processedBy,
+      startedAt: job.processedOn ? formatBangladeshTime(job.processedOn) : undefined,
+      durationSec:
+        job.processedOn && job.finishedOn
+          ? toDurationSeconds(job.processedOn, job.finishedOn)
+          : undefined,
     };
   }
 
