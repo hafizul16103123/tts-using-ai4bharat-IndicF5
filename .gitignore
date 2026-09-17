@@ -3,7 +3,6 @@ __pycache__/
 *.pyc
 .env
 outputs/
-*.wav
 !assets/prompts/*.wav
 .hf_cache/
 server.log
